@@ -28,6 +28,72 @@
 #include "exec/tlb-flags.h"
 #include "trace.h"
 
+
+//rd dst  rs1 src  rs2 grain_size
+void helper_dma(CPURISCVState *env,  target_ulong  rd, target_ulong  rs1, target_ulong rs2)
+{
+    uint32_t size = (8 << (rs2 & 3));
+    //MemOpIdx oi32 = make_memop_idx(MO_TEUL, MMU_DATA_LOAD);
+    //// 32 位小端
+    for (int i = 0; i < size; i++) {
+        //uint32_t  是4字节所以*4
+        for (int j = 0; j < size; j++) {
+            uint32_t tmp = cpu_ldl_le_data(env, rs1 + (size * i + j) * 4);
+            cpu_stl_le_data(env, rd + (size * j + i) * 4, tmp);
+        }
+    }
+}
+
+void helper_sort(CPURISCVState *env,  target_ulong  addr, target_ulong  array_num, target_ulong sort_num)
+{
+    for(int i = 0; i < sort_num; i++){
+        int swap = 0;
+        for (int j = 0 ; j <sort_num -i -1; j++){
+            if( cpu_ldl_le_data(env, addr + j * 4) > cpu_ldl_le_data(env, addr + (j+1) * 4)){
+                uint32_t tmp = cpu_ldl_le_data(env, addr + j * 4);
+                cpu_stl_le_data(env, addr + j * 4, cpu_ldl_le_data(env, addr + (j+1) * 4));
+                cpu_stl_le_data(env, addr + (j+1) * 4, tmp);
+                swap = 1;
+            }
+        }
+        if(!swap){
+            break;
+        }
+    }
+}
+
+
+
+void helper_crush(CPURISCVState *env,  target_ulong  dst, target_ulong  src, target_ulong num)
+{
+    int i = 0;
+    int j = 0;
+    while (i + 1 < num) {
+        uint8_t tmp = (cpu_ldl_le_data(env, src+ i * sizeof(uint8_t)) & 0x0F) | ((cpu_ldl_le_data(env, src+ (i + 1) * sizeof(uint8_t)) & 0x0F) <<4);
+        cpu_stl_le_data(env, dst + j * sizeof(uint8_t), tmp);
+        i += 2;
+        j++;
+    }
+
+    if (i < num) {
+        cpu_stl_le_data(env, dst + j * sizeof(uint8_t), (cpu_ldl_le_data(env, src+ i * sizeof(uint8_t)) & 0x0F));
+        j++;
+    }
+}
+
+void helper_expand(CPURISCVState *env,  target_ulong  dst, target_ulong  src, target_ulong num)
+{
+    size_t j = 0;
+    for (size_t i = 0; i < num; i++) {
+        cpu_stl_le_data(env, dst + j * sizeof(uint8_t), (cpu_ldl_le_data(env, src+ i * sizeof(uint8_t)) & 0x0F));
+        j += 1;
+        cpu_stl_le_data(env, dst + j * sizeof(uint8_t), ((cpu_ldl_le_data(env, src+ i * sizeof(uint8_t))>>4) & 0x0F));
+        j += 1;
+    }
+}
+
+
+
 /* Exceptions processing helpers */
 G_NORETURN void riscv_raise_exception(CPURISCVState *env,
                                       RISCVException exception,

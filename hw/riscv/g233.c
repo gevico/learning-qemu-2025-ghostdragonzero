@@ -44,6 +44,7 @@ static const MemMapEntry g233_memmap[] = {
     [G233_DEV_UART0] =    { 0x10000000,     0x1000 },
     [G233_DEV_GPIO0] =    { 0x10012000,     0x1000 },
     [G233_DEV_PWM0] =     { 0x10015000,     0x1000 },
+    [G233_DEV_SPI0] =     { 0x10018000,     0x1000 },
     [G233_DEV_DRAM] =     { 0x80000000, 0x40000000 },
 };
 
@@ -62,9 +63,9 @@ static void g233_soc_init(Object *obj)
     object_property_set_int(OBJECT(&s->cpus), "resetvec", 0x1004, &error_abort);
     object_property_set_str(OBJECT(&s->cpus), "cpu-type", ms->cpu_type, &error_abort);
     //配置cpu的属性
-
-    
     object_initialize_child(obj, "gpio", &s->gpio, TYPE_SIFIVE_GPIO);
+    object_initialize_child(obj, "spi", &s->spi, TYPE_G233_SPI);
+
 }
 
 static void g233_soc_realize(DeviceState *dev, Error **errp)
@@ -76,10 +77,7 @@ static void g233_soc_realize(DeviceState *dev, Error **errp)
 
     /* CPUs realize */
 
-
-    
     sysbus_realize(SYS_BUS_DEVICE(&s->cpus), &error_fatal);//注册cpu
-
 
 
     /* Mask ROM */
@@ -121,6 +119,13 @@ static void g233_soc_realize(DeviceState *dev, Error **errp)
     /* Pass all GPIOs to the SOC layer so they are available to the board */
     qdev_pass_gpios(DEVICE(&s->gpio), dev, NULL);
 
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->spi), errp)) {
+        return;
+    }
+
+    sysbus_mmio_map(SYS_BUS_DEVICE(&s->spi), 0, memmap[G233_DEV_SPI0].base);
+
     /* Connect GPIO interrupts to the PLIC */
     for (int i = 0; i < 32; i++) {
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio), i,
@@ -136,6 +141,7 @@ static void g233_soc_realize(DeviceState *dev, Error **errp)
     /* SiFive.PWM0 */
     create_unimplemented_device("riscv.g233.pwm0",
         memmap[G233_DEV_PWM0].base, memmap[G233_DEV_PWM0].size);
+    
 
 }
 

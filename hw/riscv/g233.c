@@ -119,13 +119,14 @@ static void g233_soc_realize(DeviceState *dev, Error **errp)
     /* Pass all GPIOs to the SOC layer so they are available to the board */
     qdev_pass_gpios(DEVICE(&s->gpio), dev, NULL);
 
-
+//添加spi设备
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->spi), errp)) {
         return;
     }
 
     sysbus_mmio_map(SYS_BUS_DEVICE(&s->spi), 0, memmap[G233_DEV_SPI0].base);
-
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->spi), 0,
+                       qdev_get_gpio_in(DEVICE(s->plic), G233_SPI_IRQ));
     /* Connect GPIO interrupts to the PLIC */
     for (int i = 0; i < 32; i++) {
         sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio), i,
@@ -214,6 +215,15 @@ static void g233_machine_init(MachineState *machine)
                           memmap[G233_DEV_DRAM].base,
                           false, NULL);
     }
+
+    qemu_irq flash_cs;
+
+    DeviceState *flash = qdev_new("w25x16");
+
+    qdev_realize_and_unref(flash, BUS(s->soc.spi.spi), &error_fatal);
+    
+    flash_cs = qdev_get_gpio_in_named(flash, SSI_GPIO_CS, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->soc.spi), 1, flash_cs);
 }
 
 static void g233_machine_instance_init(Object *obj)

@@ -6,6 +6,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/ssi/g233_spi.h"
+#include "qemu/fifo8.h"
 
 #ifndef STM_SPI_ERR_DEBUG
 #define STM_SPI_ERR_DEBUG 0
@@ -18,6 +19,7 @@
 } while (0)
 
 #define DB_PRINT(fmt, args...) DB_PRINT_L(1, fmt, ## args)
+#define FIFO_CAPACITY   8
 
 static void g233_spi_reset(DeviceState *dev)
 {
@@ -25,10 +27,33 @@ static void g233_spi_reset(DeviceState *dev)
 //写入复位值
     s->spi_cr1 = 0x00000000;
     s->spi_cr2 = 0x00000000;
-    s->spi_sr = 0x00000001;
+    s->spi_sr = 0x00000002;
     s->spi_dr = 0x0000000C;
     s->spi_csctrl = 0x00000000;
+    fifo8_reset(&s->tx_fifo);
+    fifo8_reset(&s->rx_fifo);
+    
 }
+
+static void g233_spi_transfer(G233SPIState *s)
+{
+
+    uint8_t tx;
+    uint8_t rx;
+
+    while (!fifo8_is_empty(&s->tx_fifo)) {
+        tx = fifo8_pop(&s->tx_fifo);
+        rx = ssi_transfer(s->spi, tx);
+
+        if (!fifo8_is_full(&s->rx_fifo)) {
+            fifo8_push(&s->rx_fifo, rx);
+        }
+    }
+    s->spi_sr |= G233_SPI_SR_RXNE;
+
+}
+
+
 
 static uint64_t g233_spi_read(void *opaque, hwaddr addr,
                                      unsigned int size)
@@ -45,14 +70,14 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr,
         qemu_log_mask(LOG_UNIMP, "%s: Interrupts and DMA are not implemented\n",
                       __func__);
         return s->spi_cr2;
-    /*
+    
     case G233_SPI_SR:
         return s->spi_sr;
     case G233_SPI_DR:
-        stm32f2xx_spi_transfer(s);
-        s->spi_sr &= ~STM_SPI_SR_RXNE;
-        return s->spi_dr；
-    */
+        g233_spi_transfer(s);
+        s->spi_sr &= ~G233_SPI_SR_RXNE;
+        return fifo8_pop(&s->rx_fifo);
+    
     case G233_SPI_CSCTRL:
         qemu_log_mask(LOG_UNIMP, "%s: CRC is not implemented, the registers " \
                       "are included for compatibility\n", __func__);
@@ -84,20 +109,20 @@ static void g233_spi_write(void *opaque, hwaddr addr,
                       "Interrupts and DMA are not implemented\n", __func__);
         s->spi_cr2 = value;
         return;
-    /*
-    case STM_SPI_SR:
+    
+    case G233_SPI_SR:
 
-         
         return;
-    case STM_SPI_DR:
-        s->spi_dr = value;
-        stm32f2xx_spi_transfer(s);
+    case G233_SPI_DR:
+        if (!fifo8_is_full(&s->tx_fifo)) {
+            fifo8_push(&s->tx_fifo, (uint8_t)value);
+            g233_spi_transfer(s);
+        }
         return;
-        */
     case G233_SPI_CSCTRL:
         qemu_log_mask(LOG_UNIMP, "%s: CRC is not implemented\n", __func__);
+        s->spi_csctrl = value;
         return;
-    
 
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -130,14 +155,21 @@ static void g233_spi_realize(DeviceState *dev, Error **errp)
                           TYPE_G233_SPI, 0x1000);
     sysbus_init_mmio(sbd, &s->mmio);
 
+    fifo8_create(&s->tx_fifo, FIFO_CAPACITY);
+    fifo8_create(&s->rx_fifo, FIFO_CAPACITY);
+
 }
 
+static const Property g233_spi_properties[] = {
+    DEFINE_PROP_UINT32("num-cs", G233SPIState, num_cs, 4),
+};
+//是支持num_cs为4
 
 static void g233_spi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-//    device_class_set_props(dc, g233_spi_properties);
+    device_class_set_props(dc, g233_spi_properties);
     device_class_set_legacy_reset(dc, g233_spi_reset);
     dc->realize = g233_spi_realize;
 }

@@ -13,6 +13,9 @@ config FDC_SYSBUS
 config SSI_M25P80
     bool
 
+config SSI_W25Q16
+    bool
+
 config PFLASH_CFI01
     bool
 

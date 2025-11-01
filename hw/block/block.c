@@ -16,6 +16,7 @@
 #include "qapi/error.h"
 #include "qapi/qapi-types-block.h"
 
+
 /*
  * Read the non-zeroes parts of @blk into @buf
  * Reading all of the @blk is expensive if the zeroes parts of @blk

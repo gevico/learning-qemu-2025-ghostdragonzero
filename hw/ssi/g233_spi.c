@@ -19,7 +19,7 @@
 } while (0)
 
 #define DB_PRINT(fmt, args...) DB_PRINT_L(1, fmt, ## args)
-#define FIFO_CAPACITY   8
+#define FIFO_CAPACITY   1
 
 static void g233_spi_reset(DeviceState *dev)
 {
@@ -35,11 +35,55 @@ static void g233_spi_reset(DeviceState *dev)
     
 }
 
+static void g233_spi_update_cs(G233SPIState *s)
+{
+    int i;
+
+    for (i = 0; i < s->num_cs; i++) {
+        if (s->spi_csctrl & (1 << i)) {
+            qemu_set_irq(s->cs_lines[i], 0);
+        }
+    }
+}
+
+static void g233_spi_update_irq(G233SPIState *s)
+{
+    int level;
+
+    if (!fifo8_is_empty(&s->rx_fifo)) {
+        s->spi_sr |= G233_SPI_SR_RXNE;
+        if (s->spi_cr2 & G233_SPI_CR2_RXNEIE) {
+            level = 1;
+        }
+    } else {
+        s->spi_sr &= ~G233_SPI_SR_RXNE;
+    }
+
+    if (!fifo8_is_empty(&s->tx_fifo)) {
+        s->spi_sr |= G233_SPI_SR_TXE;
+        if (s->spi_cr2 & G233_SPI_CR2_TXEIE) {
+            level = 1;
+        }
+    } else {
+        s->spi_sr &= ~G233_SPI_SR_TXE;
+    }
+
+
+    if (s->spi_sr &(G233_SPI_SR_OVERRUN | G233_SPI_SR_UNDERRUN)) {
+        if (s->spi_cr2 & G233_SPI_CR2_ERRIE) {
+            level = 1;
+        }
+    }
+
+    qemu_set_irq(s->irq, level);
+}
+
 static void g233_spi_transfer(G233SPIState *s)
 {
 
     uint8_t tx;
     uint8_t rx;
+
 
     while (!fifo8_is_empty(&s->tx_fifo)) {
         tx = fifo8_pop(&s->tx_fifo);
@@ -47,6 +91,8 @@ static void g233_spi_transfer(G233SPIState *s)
 
         if (!fifo8_is_full(&s->rx_fifo)) {
             fifo8_push(&s->rx_fifo, rx);
+        }else{
+            s->spi_sr |= G233_SPI_SR_OVERRUN;
         }
     }
     s->spi_sr |= G233_SPI_SR_RXNE;
@@ -59,36 +105,42 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr,
                                      unsigned int size)
 {
     G233SPIState *s = opaque;
+     uint32_t r;
 
     DB_PRINT("Address: 0x%" HWADDR_PRIx "\n", addr);
 
     switch (addr) {
    
     case G233_SPI_CR1:
-        return s->spi_cr1;
+        r=s->spi_cr1;
+        break;
     case G233_SPI_CR2:
-        qemu_log_mask(LOG_UNIMP, "%s: Interrupts and DMA are not implemented\n",
-                      __func__);
-        return s->spi_cr2;
+        r=s->spi_cr2;
+        break;
     
     case G233_SPI_SR:
-        return s->spi_sr;
+        r=s->spi_sr;
+        break;
     case G233_SPI_DR:
-        g233_spi_transfer(s);
-        s->spi_sr &= ~G233_SPI_SR_RXNE;
-        return fifo8_pop(&s->rx_fifo);
-    
+        if (!fifo8_is_empty(&s->rx_fifo)) {
+            g233_spi_transfer(s);
+            r = fifo8_pop(&s->rx_fifo);
+            break;
+        } else {
+            s->spi_sr |= G233_SPI_SR_UNDERRUN;
+            return 0;
+        }
     case G233_SPI_CSCTRL:
-        qemu_log_mask(LOG_UNIMP, "%s: CRC is not implemented, the registers " \
-                      "are included for compatibility\n", __func__);
-        return s->spi_csctrl;
+        r=s->spi_csctrl;
+        break;
 
     default:
         qemu_log_mask(LOG_GUEST_ERROR, "%s: Bad offset 0x%" HWADDR_PRIx "\n",
                       __func__, addr);
     }
 
-    return 0;
+    g233_spi_update_irq(s);
+    return r;
 }
 
 static void g233_spi_write(void *opaque, hwaddr addr,
@@ -103,31 +155,37 @@ static void g233_spi_write(void *opaque, hwaddr addr,
         
     case G233_SPI_CR1:
         s->spi_cr1 = value;
-        return;
+        break;
     case G233_SPI_CR2:
         qemu_log_mask(LOG_UNIMP, "%s: " \
                       "Interrupts and DMA are not implemented\n", __func__);
         s->spi_cr2 = value;
-        return;
+        break;
     
     case G233_SPI_SR:
 
-        return;
+        break;
     case G233_SPI_DR:
         if (!fifo8_is_full(&s->tx_fifo)) {
             fifo8_push(&s->tx_fifo, (uint8_t)value);
             g233_spi_transfer(s);
+        }else {
+            s->spi_sr |= G233_SPI_SR_OVERRUN;
         }
-        return;
+        break;
     case G233_SPI_CSCTRL:
         qemu_log_mask(LOG_UNIMP, "%s: CRC is not implemented\n", __func__);
         s->spi_csctrl = value;
-        return;
+        g233_spi_update_cs(s);
+        break;
 
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: Bad offset 0x%" HWADDR_PRIx "\n", __func__, addr);
     }
+
+    g233_spi_update_irq(s);
+
 }
 
 static const MemoryRegionOps g233_spi_ops = {

@@ -34,6 +34,7 @@
 #include "hw/intc/sifive_plic.h"
 #include "hw/misc/unimp.h"
 #include "hw/char/pl011.h"
+#include "system/block-backend.h"
 
 /* TODO: you need include some header files */
 
@@ -215,15 +216,28 @@ static void g233_machine_init(MachineState *machine)
                           memmap[G233_DEV_DRAM].base,
                           false, NULL);
     }
+    //添加flash
 
-    qemu_irq flash_cs;
-
-    DeviceState *flash = qdev_new("w25x16");
-
-    qdev_realize_and_unref(flash, BUS(s->soc.spi.spi), &error_fatal);
+    DeviceState *flash0 = qdev_new("w25x16");
     
-    flash_cs = qdev_get_gpio_in_named(flash, SSI_GPIO_CS, 0);
-    sysbus_connect_irq(SYS_BUS_DEVICE(&s->soc.spi), 1, flash_cs);
+    BlockBackend *blk0 = blk_by_name("flash0");
+    qdev_prop_set_drive_err(flash0, "drive", blk0, &error_fatal);
+    qdev_prop_set_uint8(flash0, "cs", 0);
+    qdev_realize_and_unref(flash0, BUS(s->soc.spi.spi), &error_fatal);
+    
+    qemu_irq flash_cs0 = qdev_get_gpio_in_named(flash0, SSI_GPIO_CS, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->soc.spi), 1, flash_cs0);
+
+    DeviceState *flash1 = qdev_new("w25x32");
+    qdev_prop_set_uint8(flash1, "cs", 1);
+    BlockBackend *blk1 = blk_by_name("flash1");
+    qdev_prop_set_drive_err(flash1, "drive", blk1, &error_fatal);
+    qdev_realize_and_unref(flash1, BUS(s->soc.spi.spi), &error_fatal);
+    
+    qemu_irq flash_cs1 = qdev_get_gpio_in_named(flash1, SSI_GPIO_CS, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(&s->soc.spi), 2, flash_cs1);
+    //为什么这个片选信号就是+1
+
 }
 
 static void g233_machine_instance_init(Object *obj)

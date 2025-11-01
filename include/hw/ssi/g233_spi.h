@@ -12,7 +12,17 @@
 #define G233_SPI_DR      0x0C
 #define G233_SPI_CSCTRL   0x10
 
-#define G233_SPI_SR_RXNE   1
+/* SPI_CR2*/
+#define G233_SPI_CR2_TXEIE  1<<7
+#define G233_SPI_CR2_RXNEIE  1<<6
+#define G233_SPI_CR2_ERRIE   1<<5
+#define G233_SPI_CR2_SSOE    1<<4
+/* SPI_SR */
+#define G233_SPI_SR_BSY      1<<7
+#define G233_SPI_SR_OVERRUN  1<<3
+#define G233_SPI_SR_UNDERRUN 1<<2
+#define G233_SPI_SR_TXE     1<<1
+#define G233_SPI_SR_RXNE     1<<0
 
 #define TYPE_G233_SPI "g233-spi"
 OBJECT_DECLARE_SIMPLE_TYPE(G233SPIState, G233_SPI)

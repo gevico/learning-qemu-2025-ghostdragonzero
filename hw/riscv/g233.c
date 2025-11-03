@@ -228,7 +228,7 @@ static void g233_machine_init(MachineState *machine)
     qemu_irq flash_cs0 = qdev_get_gpio_in_named(flash0, SSI_GPIO_CS, 0);
     sysbus_connect_irq(SYS_BUS_DEVICE(&s->soc.spi), 1, flash_cs0);
 
-    DeviceState *flash1 = qdev_new("w25x32");
+   DeviceState *flash1 = qdev_new("w25x32");
     qdev_prop_set_uint8(flash1, "cs", 1);
     BlockBackend *blk1 = blk_by_name("flash1");
     qdev_prop_set_drive_err(flash1, "drive", blk1, &error_fatal);

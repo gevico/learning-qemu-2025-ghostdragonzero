@@ -38,17 +38,24 @@ static void g233_spi_reset(DeviceState *dev)
 static void g233_spi_update_cs(G233SPIState *s)
 {
     int i;
+    uint32_t cs_enable = s->spi_csctrl & 0x0F;        /* bits[3:0] for CS enable */
+    uint32_t cs_active = (s->spi_csctrl >> 4) & 0x0F; /* bits[7:4] for CS active */
 
     for (i = 0; i < s->num_cs; i++) {
-        if (s->spi_csctrl & (1 << i)) {
-            qemu_set_irq(s->cs_lines[i], 0);
-        }
+        /* CS is active low, only assert (drive low) if both enabled and active */
+        bool cs_assert = (cs_enable & (1 << i)) && (cs_active & (1 << i));
+        qemu_set_irq(s->cs_lines[i], cs_assert ? 0 : 1);
     }
+    /*
+    CS信号的极性不对：SPI flash通常是低电平有效的，而当前的代码中当spi_csctrl对应位为1时拉低CS，这样所有启用的CS都会同时被激活。
+
+spi_csctrl寄存器的位定义有问题：根据测试代码中的定义：
+    */
 }
 
 static void g233_spi_update_irq(G233SPIState *s)
 {
-    int level;
+    int level = 0;
 
     if (!fifo8_is_empty(&s->rx_fifo)) {
         s->spi_sr |= G233_SPI_SR_RXNE;
@@ -60,16 +67,15 @@ static void g233_spi_update_irq(G233SPIState *s)
     }
 
     if (!fifo8_is_empty(&s->tx_fifo)) {
-        s->spi_sr |= G233_SPI_SR_TXE;
+        s->spi_sr &= ~G233_SPI_SR_TXE;
         if (s->spi_cr2 & G233_SPI_CR2_TXEIE) {
             level = 1;
         }
     } else {
-        s->spi_sr &= ~G233_SPI_SR_TXE;
+        s->spi_sr |= G233_SPI_SR_TXE;
     }
 
-
-    if (s->spi_sr &(G233_SPI_SR_OVERRUN | G233_SPI_SR_UNDERRUN)) {
+    if (s->spi_sr & (G233_SPI_SR_OVERRUN | G233_SPI_SR_UNDERRUN)) {
         if (s->spi_cr2 & G233_SPI_CR2_ERRIE) {
             level = 1;
         }
@@ -80,10 +86,10 @@ static void g233_spi_update_irq(G233SPIState *s)
 
 static void g233_spi_transfer(G233SPIState *s)
 {
-
     uint8_t tx;
     uint8_t rx;
 
+    s->spi_sr |= G233_SPI_SR_BSY;  // Set busy flag when transfer starts
 
     while (!fifo8_is_empty(&s->tx_fifo)) {
         tx = fifo8_pop(&s->tx_fifo);
@@ -91,12 +97,14 @@ static void g233_spi_transfer(G233SPIState *s)
 
         if (!fifo8_is_full(&s->rx_fifo)) {
             fifo8_push(&s->rx_fifo, rx);
-        }else{
+            s->spi_sr |= G233_SPI_SR_RXNE;  // Set RXNE when data received
+        } else {
             s->spi_sr |= G233_SPI_SR_OVERRUN;
         }
     }
-    s->spi_sr |= G233_SPI_SR_RXNE;
 
+    s->spi_sr |= G233_SPI_SR_TXE;  // TX buffer is now empty
+    s->spi_sr &= ~G233_SPI_SR_BSY;  // Clear busy flag when transfer completes
 }
 
 
@@ -123,12 +131,17 @@ static uint64_t g233_spi_read(void *opaque, hwaddr addr,
         break;
     case G233_SPI_DR:
         if (!fifo8_is_empty(&s->rx_fifo)) {
-            g233_spi_transfer(s);
             r = fifo8_pop(&s->rx_fifo);
+            // If RX FIFO is now empty, clear RXNE
+            if (fifo8_is_empty(&s->rx_fifo)) {
+                s->spi_sr &= ~G233_SPI_SR_RXNE;
+            }
             break;
         } else {
             s->spi_sr |= G233_SPI_SR_UNDERRUN;
-            return 0;
+            s->spi_sr &= ~G233_SPI_SR_RXNE;
+            r = 0;
+            break;
         }
     case G233_SPI_CSCTRL:
         r=s->spi_csctrl;
@@ -157,19 +170,37 @@ static void g233_spi_write(void *opaque, hwaddr addr,
         s->spi_cr1 = value;
         break;
     case G233_SPI_CR2:
-        qemu_log_mask(LOG_UNIMP, "%s: " \
-                      "Interrupts and DMA are not implemented\n", __func__);
         s->spi_cr2 = value;
+        /* If TXE interrupt is enabled and TX FIFO is empty, trigger interrupt */
+        if ((value & G233_SPI_CR2_TXEIE) && (s->spi_sr & G233_SPI_SR_TXE)) {
+            s->spi_sr |= G233_SPI_SR_TXE;
+            qemu_set_irq(s->irq, 1);
+            return;
+
+        }
+        /* If RXNE interrupt is enabled and RX FIFO has data, trigger interrupt */
+        if ((value & G233_SPI_CR2_RXNEIE) && !fifo8_is_empty(&s->rx_fifo)) {
+            s->spi_sr |= G233_SPI_SR_RXNE;
+            qemu_set_irq(s->irq, 1);
+            return;
+        }
         break;
     
     case G233_SPI_SR:
-
+        // Writing 1 to OVERRUN or UNDERRUN bits clears them
+        if (value & G233_SPI_SR_OVERRUN) {
+            s->spi_sr &= ~G233_SPI_SR_OVERRUN;
+        }
+        if (value & G233_SPI_SR_UNDERRUN) {
+            s->spi_sr &= ~G233_SPI_SR_UNDERRUN;
+        }
         break;
     case G233_SPI_DR:
         if (!fifo8_is_full(&s->tx_fifo)) {
             fifo8_push(&s->tx_fifo, (uint8_t)value);
+            s->spi_sr &= ~G233_SPI_SR_TXE;  // Clear TXE when data written
             g233_spi_transfer(s);
-        }else {
+        } else {
             s->spi_sr |= G233_SPI_SR_OVERRUN;
         }
         break;
@@ -184,6 +215,7 @@ static void g233_spi_write(void *opaque, hwaddr addr,
                       "%s: Bad offset 0x%" HWADDR_PRIx "\n", __func__, addr);
     }
 
+    
     g233_spi_update_irq(s);
 
 }
